@@ -1,6 +1,6 @@
 # thekeyctl
 
-`thekeyctl` is a small Go CLI for controlling the RGB LEDs on the **Drop The Key V2** macropad from Linux.
+`thekeyctl` is a small Go CLI for controlling the RGB LEDs on the **Drop The Key V2** macropad.
 
 It is intended for using the macropad as an application-attention indicator. An application can start a breathing LED alert, and pressing any of the three physical keys acknowledges the alert by turning the LEDs off while still sending the configured keypress.
 
