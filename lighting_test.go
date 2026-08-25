@@ -39,6 +39,67 @@ func wantWrites(t *testing.T, f *fakeHID, want [][]byte) {
 // TestApplyLightingWriteOrder locks down the order the firmware requires.
 // RGBLIGHT ignores writes it cannot apply to its current state, so lighting
 // has to be enabled and configured in static mode before the effect is set.
+func TestDeviceInfo(t *testing.T) {
+	d, _ := newFakeDevice(
+		fakeRead{data: packet(cmdGetProtocolVersion, 0x00, 0x09)},
+		fakeRead{data: packet(cmdLightingGetValue, rgbBrightness, 40)},
+	)
+	d.path = "/dev/hidraw0"
+	d.product = "Drop The Key V2"
+
+	out := captureStdout(t)
+
+	if err := deviceInfo(d); err != nil {
+		t.Fatalf("deviceInfo: %v", err)
+	}
+
+	want := "Device:       Drop The Key V2\n" +
+		"VID:PID:      359b:000e\n" +
+		"HID path:     /dev/hidraw0\n" +
+		"VIA protocol: 9\n" +
+		"RGBLIGHT:     available\n"
+	if got := out.String(); got != want {
+		t.Errorf("deviceInfo output =\n%q\nwant\n%q", got, want)
+	}
+}
+
+func TestDeviceInfoFallsBackWhenProductStringEmpty(t *testing.T) {
+	d, _ := newFakeDevice(
+		fakeRead{data: packet(cmdGetProtocolVersion, 0x00, 0x09)},
+		fakeRead{data: packet(cmdLightingGetValue, rgbBrightness, 0)},
+	)
+	d.path = "/dev/hidraw0"
+
+	out := captureStdout(t)
+
+	if err := deviceInfo(d); err != nil {
+		t.Fatalf("deviceInfo: %v", err)
+	}
+
+	if !strings.Contains(out.String(), "Device:       unknown\n") {
+		t.Errorf("output = %q, want fallback device name \"unknown\"", out.String())
+	}
+}
+
+func TestDeviceInfoRGBLIGHTUnavailable(t *testing.T) {
+	d, _ := newFakeDevice(
+		fakeRead{data: packet(cmdGetProtocolVersion, 0x00, 0x09)},
+		fakeRead{data: packet(0xff)},
+	)
+	d.path = "/dev/hidraw0"
+	d.product = "Drop The Key V2"
+
+	out := captureStdout(t)
+
+	if err := deviceInfo(d); err != nil {
+		t.Fatalf("deviceInfo: %v", err)
+	}
+
+	if !strings.Contains(out.String(), "RGBLIGHT:     not available\n") {
+		t.Errorf("output = %q, want \"not available\"", out.String())
+	}
+}
+
 func TestApplyLightingWriteOrder(t *testing.T) {
 	t.Run("breathing", func(t *testing.T) {
 		d, f := echoDevice()

@@ -31,6 +31,8 @@ func helpUsage() {
 
 func fprintUsage(w io.Writer) {
 	fmt.Fprintf(w, `Usage:
+  thekeyctl device info
+
   thekeyctl status
 
   thekeyctl led off
@@ -197,6 +199,25 @@ func parseCommand(args []string) (handler, error) {
 	}
 
 	switch args[0] {
+	case "device":
+		if len(args) < 2 {
+			usage()
+			return nil, errors.New("device command required")
+		}
+
+		switch args[1] {
+		case "info":
+			if len(args) != 2 {
+				usage()
+				return nil, errors.New("device info takes no arguments")
+			}
+			return deviceInfo, nil
+
+		default:
+			usage()
+			return nil, fmt.Errorf("unknown device command %q", args[1])
+		}
+
 	case "status":
 		if len(args) != 1 {
 			usage()

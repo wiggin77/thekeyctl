@@ -1,6 +1,9 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 const (
 	// With only RGBLIGHT_EFFECT_BREATHING compiled:
@@ -41,6 +44,35 @@ func parseColor(name string) (hsv, error) {
 	}
 
 	return value, nil
+}
+
+func deviceInfo(d *device) error {
+	protocol, err := d.protocolVersion()
+	if err != nil {
+		return fmt.Errorf("getting VIA protocol version: %w", err)
+	}
+
+	rgblightState := "available"
+	if _, err := d.getRGB(rgbBrightness, 1); err != nil {
+		if strings.Contains(err.Error(), "unhandled") {
+			rgblightState = "not available"
+		} else {
+			return fmt.Errorf("checking RGBLIGHT: %w", err)
+		}
+	}
+
+	name := d.product
+	if name == "" {
+		name = "unknown"
+	}
+
+	fmt.Fprintf(stdout, "Device:       %s\n", name)
+	fmt.Fprintf(stdout, "VID:PID:      %04x:%04x\n", vendorID, productID)
+	fmt.Fprintf(stdout, "HID path:     %s\n", d.path)
+	fmt.Fprintf(stdout, "VIA protocol: %d\n", protocol)
+	fmt.Fprintf(stdout, "RGBLIGHT:     %s\n", rgblightState)
+
+	return nil
 }
 
 func ledOff(d *device) error {

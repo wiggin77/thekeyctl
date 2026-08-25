@@ -52,11 +52,13 @@ type transport interface {
 }
 
 type device struct {
-	hid transport
+	hid     transport
+	path    string
+	product string
 }
 
 func openDevice() (*device, error) {
-	var path string
+	var path, product string
 
 	err := hid.Enumerate(vendorID, productID, func(info *hid.DeviceInfo) error {
 		if path != "" {
@@ -65,6 +67,7 @@ func openDevice() (*device, error) {
 
 		if info.UsagePage == rawUsagePage && info.Usage == rawUsage {
 			path = info.Path
+			product = info.ProductStr
 		}
 
 		return nil
@@ -88,7 +91,7 @@ func openDevice() (*device, error) {
 		return nil, fmt.Errorf("opening HID device %q: %w", path, err)
 	}
 
-	return &device{hid: d}, nil
+	return &device{hid: d, path: path, product: product}, nil
 }
 
 func (d *device) close() error {

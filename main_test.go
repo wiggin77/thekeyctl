@@ -71,6 +71,9 @@ func TestParseCommandErrorsUseStderr(t *testing.T) {
 	}{
 		{"no arguments", nil, "command required"},
 		{"unknown command", []string{"bogus"}, `unknown command "bogus"`},
+		{"device without subcommand", []string{"device"}, "device command required"},
+		{"unknown device command", []string{"device", "bogus"}, `unknown device command "bogus"`},
+		{"device info with arguments", []string{"device", "info", "extra"}, "device info takes no arguments"},
 		{"unknown led command", []string{"led", "bogus"}, `unknown LED command "bogus"`},
 		{"missing led command", []string{"led"}, "LED command required"},
 		{"status with arguments", []string{"status", "extra"}, "status takes no arguments"},
