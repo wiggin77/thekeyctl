@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"syscall"
 	"time"
@@ -73,22 +74,45 @@ func openDevice() (*device, error) {
 		return nil
 	})
 	if err != nil {
-		return nil, fmt.Errorf("enumerating HID devices: %w", err)
+		return nil, &codeError{
+			code: exitHIDFailure,
+			err:  fmt.Errorf("enumerating HID devices: %w", err),
+		}
 	}
 
 	if path == "" {
-		return nil, fmt.Errorf(
-			"The Key V2 Vial HID interface not found (VID=%04x PID=%04x usage=%04x:%04x)",
-			vendorID,
-			productID,
-			rawUsagePage,
-			rawUsage,
-		)
+		return nil, &codeError{
+			code: exitDeviceNotFound,
+			err: fmt.Errorf(
+				"The Key V2 Vial HID interface not found (VID=%04x PID=%04x usage=%04x:%04x)",
+				vendorID,
+				productID,
+				rawUsagePage,
+				rawUsage,
+			),
+		}
+	}
+
+	// Probe r/w access before handing off to HIDAPI. os.OpenFile returns a
+	// typed *os.PathError wrapping os.ErrPermission on EACCES, so we get a
+	// structured error rather than having to match HIDAPI's opaque strings.
+	if f, err := os.OpenFile(path, os.O_RDWR, 0); err != nil {
+		if errors.Is(err, os.ErrPermission) {
+			return nil, &codeError{
+				code: exitAccessDenied,
+				err:  fmt.Errorf("opening HID device %q: permission denied (check udev rules)", path),
+			}
+		}
+	} else {
+		f.Close()
 	}
 
 	d, err := hid.OpenPath(path)
 	if err != nil {
-		return nil, fmt.Errorf("opening HID device %q: %w", path, err)
+		return nil, &codeError{
+			code: exitHIDFailure,
+			err:  fmt.Errorf("opening HID device %q: %w", path, err),
+		}
 	}
 
 	return &device{hid: d, path: path, product: product}, nil
@@ -217,15 +241,18 @@ func (d *device) protocolVersion() (uint16, error) {
 func (d *device) checkProtocol() error {
 	version, err := d.protocolVersion()
 	if err != nil {
-		return err
+		return &codeError{code: exitHIDFailure, err: err}
 	}
 
 	if version != expectedVIAProtocol {
-		return fmt.Errorf(
-			"unsupported VIA protocol version %d; expected %d",
-			version,
-			expectedVIAProtocol,
-		)
+		return &codeError{
+			code: exitProtocolMismatch,
+			err: fmt.Errorf(
+				"unsupported VIA protocol version %d; expected %d",
+				version,
+				expectedVIAProtocol,
+			),
+		}
 	}
 
 	return nil

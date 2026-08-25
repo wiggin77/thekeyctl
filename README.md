@@ -38,32 +38,26 @@ ID 359b:000e Drop Inc. The Key V2
 ## CLI usage
 
 ```text
-thekeyctl status
+thekeyctl device info [--json]
+thekeyctl status [--json]
 
 thekeyctl led off
 thekeyctl led solid [--color COLOR] [--brightness 0-255]
 thekeyctl led alert [--color COLOR] [--brightness 0-255] [--rate 1-4]
 ```
 
-Supported named colors:
+Supported named colors: `red`, `amber`, `orange`, `yellow`, `green`, `cyan`, `blue`, `purple`, `pink`, `white`.
 
-```text
-red
-amber
-orange
-yellow
-green
-cyan
-blue
-purple
-pink
-white
-```
+`device info` reports the device name, VID/PID, HID path, VIA protocol version, and whether RGBLIGHT is accessible. `status` reports the current lighting state (effect, brightness, color, speed). Both accept `--json` for machine-readable output.
 
 Examples:
 
 ```bash
+thekeyctl device info
+thekeyctl device info --json
+
 thekeyctl status
+thekeyctl status --json
 
 thekeyctl led solid --color blue --brightness 40
 
@@ -77,6 +71,34 @@ thekeyctl led off
 The default alert is an amber breathing effect.
 
 When an alert is active, pressing any of the three physical keys turns the LEDs off and then processes the key normally.
+
+## Exit codes
+
+These codes are stable across releases and suitable for use in scripts and application integrations.
+
+| Code | Meaning |
+| --- | --- |
+| 0 | Success |
+| 1 | Invalid arguments or usage error |
+| 2 | Device not found: macropad not connected, or custom firmware not flashed |
+| 3 | Permission denied: `hidraw` node not accessible; check udev rules |
+| 4 | VIA protocol mismatch: firmware uses a version this build does not support |
+| 5 | HID communication failure: I/O error, timeout, or unexpected device response |
+
+Example in a shell script:
+
+```bash
+thekeyctl led alert
+status=$?
+
+case $status in
+  0) ;;                              # success
+  2) echo "macropad not connected" ;;
+  3) echo "check udev rules" ;;
+  4) echo "firmware needs updating" ;;
+  *) echo "unexpected error $status" ;;
+esac
+```
 
 ## Building the CLI
 
@@ -512,10 +534,10 @@ Only flash after confirming the build succeeds and fits within the ATmega32U4 fi
 
 ## Troubleshooting
 
-### Permission denied opening the device
+### Permission denied opening the device (exit code 3)
 
 ```text
-thekeyctl: opening HID device "/dev/hidraw4": Failed to open a device with path '/dev/hidraw4': Permission denied
+thekeyctl: opening HID device "/dev/hidraw4": permission denied (check udev rules)
 ```
 
 The Raw HID interface was found, but the `hidraw` node cannot be opened. This is the udev rule, not the firmware.
@@ -546,7 +568,7 @@ If there is no `+`:
 
   and make sure your account is in that group.
 
-### Vial HID interface not found
+### Vial HID interface not found (exit code 2)
 
 ```text
 thekeyctl: The Key V2 Vial HID interface not found (VID=359b PID=000e usage=ff60:0061)
@@ -560,7 +582,7 @@ lsusb | grep -Ei '359b|the.?key'
 
 `359b:000e Drop Inc. The Key V2` means the firmware is right and the device is present. `feed:6060 qmkbuilder keyboard` means the stock firmware is still flashed, so there is no Vial Raw HID interface to talk to. See [Custom firmware](#custom-firmware).
 
-### Unsupported VIA protocol version
+### Unsupported VIA protocol version (exit code 4)
 
 ```text
 thekeyctl: unsupported VIA protocol version 12; expected 9

@@ -10,6 +10,37 @@ import (
 	hid "github.com/sstallion/go-hid"
 )
 
+// Process exit codes. These are stable across releases and suitable for use
+// by calling scripts and applications.
+const (
+	exitSuccess          = 0 // command completed successfully
+	exitUsage            = 1 // invalid arguments or usage error
+	exitDeviceNotFound   = 2 // macropad not connected or Vial HID interface not found
+	exitAccessDenied     = 3 // permission denied opening the HID device (check udev rules)
+	exitProtocolMismatch = 4 // VIA protocol version not supported by this build
+	exitHIDFailure       = 5 // HID communication error (I/O failure, timeout, etc.)
+)
+
+// codeError is an error that carries a stable process exit code.
+type codeError struct {
+	code int
+	err  error
+}
+
+func (e *codeError) Error() string { return e.err.Error() }
+func (e *codeError) Unwrap() error { return e.err }
+
+// exitCode returns the exit code embedded in err, or exitUsage if err carries
+// none (which should not happen in normal operation).
+func exitCode(err error) int {
+	var ce *codeError
+	if errors.As(err, &ce) {
+		return ce.code
+	}
+
+	return exitUsage
+}
+
 // stdout and stderr are the program's output streams. They are variables so
 // tests can capture what the CLI prints.
 var (
@@ -297,7 +328,7 @@ func parseCommand(args []string) (handler, error) {
 func run() error {
 	h, err := parseCommand(os.Args[1:])
 	if err != nil {
-		return err
+		return &codeError{code: exitUsage, err: err}
 	}
 
 	if h == nil {
@@ -305,7 +336,10 @@ func run() error {
 	}
 
 	if err := hid.Init(); err != nil {
-		return fmt.Errorf("initializing HIDAPI: %w", err)
+		return &codeError{
+			code: exitHIDFailure,
+			err:  fmt.Errorf("initializing HIDAPI: %w", err),
+		}
 	}
 	defer func() {
 		_ = hid.Exit()
@@ -313,22 +347,26 @@ func run() error {
 
 	d, err := openDevice()
 	if err != nil {
-		return err
+		return err // already a *codeError from openDevice
 	}
 	defer func() {
 		_ = d.close()
 	}()
 
 	if err := d.checkProtocol(); err != nil {
-		return err
+		return err // already a *codeError from checkProtocol
 	}
 
-	return h(d)
+	if err := h(d); err != nil {
+		return &codeError{code: exitHIDFailure, err: err}
+	}
+
+	return nil
 }
 
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintf(stderr, "thekeyctl: %v\n", err)
-		os.Exit(1)
+		os.Exit(exitCode(err))
 	}
 }

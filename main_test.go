@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"strconv"
 	"strings"
 	"testing"
@@ -301,6 +302,62 @@ func TestParseDeviceInfoBuildsHandlers(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestExitCodeFromError covers exitCode() for all defined categories, using
+// direct codeError construction so the test does not require hardware.
+func TestExitCodeFromError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want int
+	}{
+		{"usage", &codeError{code: exitUsage, err: errors.New("bad flag")}, exitUsage},
+		{"device not found", &codeError{code: exitDeviceNotFound, err: errors.New("not found")}, exitDeviceNotFound},
+		{"access denied", &codeError{code: exitAccessDenied, err: errors.New("denied")}, exitAccessDenied},
+		{"protocol mismatch", &codeError{code: exitProtocolMismatch, err: errors.New("wrong version")}, exitProtocolMismatch},
+		{"hid failure", &codeError{code: exitHIDFailure, err: errors.New("io error")}, exitHIDFailure},
+		{"untagged error falls back to exitUsage", errors.New("unexpected"), exitUsage},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := exitCode(tt.err); got != tt.want {
+				t.Errorf("exitCode(%v) = %d, want %d", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestCheckProtocolExitCode verifies that a VIA version mismatch produces
+// exitProtocolMismatch and that a real HID error produces exitHIDFailure.
+// These are the only exit-code paths testable without hardware.
+func TestCheckProtocolExitCode(t *testing.T) {
+	t.Run("version mismatch", func(t *testing.T) {
+		d, _ := newFakeDevice(fakeRead{data: packet(cmdGetProtocolVersion, 0x00, 0x0c)})
+
+		err := d.checkProtocol()
+		if err == nil {
+			t.Fatal("err = nil, want protocol mismatch error")
+		}
+
+		if got := exitCode(err); got != exitProtocolMismatch {
+			t.Errorf("exit code = %d, want exitProtocolMismatch (%d)", got, exitProtocolMismatch)
+		}
+	})
+
+	t.Run("HID communication failure", func(t *testing.T) {
+		d, _ := newFakeDevice() // no responses queued: ReadWithTimeout returns ErrTimeout
+
+		err := d.checkProtocol()
+		if err == nil {
+			t.Fatal("err = nil, want HID failure error")
+		}
+
+		if got := exitCode(err); got != exitHIDFailure {
+			t.Errorf("exit code = %d, want exitHIDFailure (%d)", got, exitHIDFailure)
+		}
+	})
 }
 
 func TestUint8Arg(t *testing.T) {
