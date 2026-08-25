@@ -456,15 +456,51 @@ For the current Vial-QMK firmware used by this project:
 
 Lighting operations use QMK's non-EEPROM RGBLIGHT functions, so application alerts do not continually write transient state to the keyboard's EEPROM.
 
+### RGBLIGHT write order
+
+QMK silently ignores RGBLIGHT values it cannot apply to the current state, and returns a normal success response for the write regardless. Two cases matter here, both confirmed against this firmware by writing a value and reading it back:
+
+- While RGBLIGHT is disabled, every write is dropped, including the effect mode itself. A nonzero effect write only enables RGBLIGHT, which comes up in static mode still holding the previous color. Requesting breathing mode 4 while the LEDs are off leaves the device in static mode.
+- While a breathing effect is running, brightness writes are dropped.
+
+So values cannot simply be written in the order an application thinks of them. `thekeyctl` enables the LEDs in static mode, configures them there, and switches to the requested effect last:
+
+```text
+effect  = static     enable RGBLIGHT so later writes are accepted
+brightness = 0       hide the previous color while the new one is set
+color   = hue, sat
+brightness = value   set while static, because breathing ignores it
+effect  = requested  skipped when the requested effect is static
+```
+
+Getting this wrong is not a visible protocol error. It shows up as the first command after `led off` keeping the previous color, or as `led alert --brightness` having no effect.
+
+## Source layout
+
+The CLI is a single Go package split by layer:
+
+| File | Contents |
+| --- | --- |
+| `device.go` | HID transport and the VIA protocol, plus the constants that pin both to the firmware |
+| `lighting.go` | Lighting behavior: effect IDs, named colors, and the order RGBLIGHT values must be written in |
+| `main.go` | Command line: usage text, flag parsing, and dispatch |
+
+The command line is fully parsed before the device is opened, so `help`, `-h`, and argument errors work with no macropad attached.
+
+`device` talks to the macropad through a small `transport` interface rather than the HID handle directly. The tests (`device_test.go`, `lighting_test.go`, `main_test.go`) substitute a scripted fake for it, which is why the whole suite runs without hardware.
+
 ## Development workflow
 
 After making CLI changes:
 
 ```bash
-gofmt -w main.go
+gofmt -w <edited files>
+go vet ./...
 go test ./...
 go build -o thekeyctl .
 ```
+
+`go test ./...` does not need the macropad plugged in. To check against real hardware, run `./thekeyctl status` and the `led` commands with the macropad attached.
 
 After making firmware changes:
 
