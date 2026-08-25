@@ -4,7 +4,10 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
+	"strings"
+	"syscall"
 	"time"
 
 	hid "github.com/sstallion/go-hid"
@@ -20,6 +23,12 @@ const (
 
 	// QMK Raw HID packets are always 32 bytes.
 	packetSize = 32
+
+	// How long to wait for the device to answer a single command.
+	responseTimeout = time.Second
+
+	// How many times a HID transfer is retried after a signal interrupts it.
+	maxInterruptRetries = 5
 
 	// VIA protocol commands used by the Vial-QMK firmware.
 	cmdGetProtocolVersion byte = 0x01
@@ -110,6 +119,45 @@ func (d *device) close() error {
 	return d.hid.Close()
 }
 
+// isEINTR reports whether err is an "interrupted system call" failure.
+//
+// HIDAPI reports a failed read(2), write(2) or poll(2) by formatting errno
+// with strerror(3), and go-hid turns that into a plain error carrying only the
+// message, so there is no errno left to compare against. The message is
+// matched instead, against the same text the syscall package uses. errors.Is
+// is still tried first, in case a future go-hid wraps a real syscall.Errno.
+func isEINTR(err error) bool {
+	if errors.Is(err, syscall.EINTR) {
+		return true
+	}
+
+	return strings.EqualFold(err.Error(), syscall.EINTR.Error())
+}
+
+// writeReport writes one HID report, retrying when a signal interrupts the
+// write. An interrupted write(2) transferred nothing, so the retry cannot
+// duplicate a command.
+func (d *device) writeReport(out []byte) (int, error) {
+	for attempt := 0; ; attempt++ {
+		n, err := d.hid.Write(out)
+		if err == nil || attempt == maxInterruptRetries || !isEINTR(err) {
+			return n, err
+		}
+	}
+}
+
+// readReport reads one HID response, retrying when a signal interrupts the
+// read. The response is still pending after an interruption, so the retry
+// picks it up. Each attempt gets a fresh timeout.
+func (d *device) readReport(in []byte) (int, error) {
+	for attempt := 0; ; attempt++ {
+		n, err := d.hid.ReadWithTimeout(in, responseTimeout)
+		if err == nil || attempt == maxInterruptRetries || !isEINTR(err) {
+			return n, err
+		}
+	}
+}
+
 // command sends one 32-byte QMK Raw HID packet and waits for the 32-byte
 // response.
 //
@@ -133,7 +181,7 @@ func (d *device) command(payload ...byte) ([]byte, error) {
 	out := make([]byte, packetSize+1)
 	copy(out[1:], payload)
 
-	n, err := d.hid.Write(out)
+	n, err := d.writeReport(out)
 	if err != nil {
 		return nil, fmt.Errorf("writing HID report: %w", err)
 	}
@@ -148,13 +196,13 @@ func (d *device) command(payload ...byte) ([]byte, error) {
 
 	in := make([]byte, packetSize)
 
-	n, err = d.hid.ReadWithTimeout(in, time.Second)
+	n, err = d.readReport(in)
 	if err != nil {
-		return nil, fmt.Errorf("reading HID response: %w", err)
-	}
+		if errors.Is(err, hid.ErrTimeout) {
+			return nil, errors.New("timeout waiting for HID response")
+		}
 
-	if n == 0 {
-		return nil, errors.New("timeout waiting for HID response")
+		return nil, fmt.Errorf("reading HID response: %w", err)
 	}
 
 	resp := in[:n]
@@ -336,32 +384,29 @@ func ledOff(d *device) error {
 	return d.setEffect(effectOff)
 }
 
-func ledSolid(d *device, args []string) error {
-	fs := flag.NewFlagSet("led solid", flag.ContinueOnError)
-
-	colorName := fs.String("color", "white", "LED color")
-	brightnessArg := fs.Int("brightness", 64, "brightness, 0-255")
-
-	if err := fs.Parse(args); err != nil {
-		return err
+// applyLighting turns the LEDs on with the requested color, brightness and
+// effect.
+//
+// The write order matters, because QMK's RGBLIGHT drops writes it cannot
+// apply to the current state:
+//
+//   - While RGBLIGHT is disabled, every write is ignored, including the effect
+//     mode itself. A nonzero effect write only enables RGBLIGHT, which comes
+//     up in static mode still holding the previous color.
+//   - While a breathing effect is running, brightness writes are ignored.
+//
+// So the LEDs are enabled in static mode, fully configured there, and only
+// then switched to the requested effect. Brightness is dropped to zero first
+// so the previous color is not visible while the new settings are applied.
+func applyLighting(d *device, color hsv, brightness uint8, effect byte) error {
+	if err := d.setEffect(effectStatic); err != nil {
+		return fmt.Errorf("enabling lighting: %w", err)
 	}
 
-	if fs.NArg() != 0 {
-		return fmt.Errorf("unexpected argument %q", fs.Arg(0))
+	if err := d.setBrightness(0); err != nil {
+		return fmt.Errorf("blanking LEDs: %w", err)
 	}
 
-	color, err := parseColor(*colorName)
-	if err != nil {
-		return err
-	}
-
-	brightness, err := uint8Arg("brightness", *brightnessArg)
-	if err != nil {
-		return err
-	}
-
-	// Set HSV before enabling the LEDs so the transition from off does not
-	// briefly show the previous color.
 	if err := d.setColor(color); err != nil {
 		return fmt.Errorf("setting color: %w", err)
 	}
@@ -370,40 +415,117 @@ func ledSolid(d *device, args []string) error {
 		return fmt.Errorf("setting brightness: %w", err)
 	}
 
-	if err := d.setEffect(effectStatic); err != nil {
-		return fmt.Errorf("enabling static lighting: %w", err)
+	if effect != effectStatic {
+		if err := d.setEffect(effect); err != nil {
+			return fmt.Errorf("setting effect: %w", err)
+		}
 	}
 
 	return nil
 }
 
-func ledAlert(d *device, args []string) error {
+// parseFlags parses a subcommand's flags and rejects leftover positional
+// arguments.
+//
+// The flag package's own output is suppressed during parsing so that a bad
+// flag is reported once, by main, instead of twice. The flag defaults are then
+// printed to stdout for an explicit -h and to stderr when they accompany an
+// error.
+//
+// It returns done=true when the flags were fully handled by printing help.
+func parseFlags(fs *flag.FlagSet, args []string) (bool, error) {
+	fs.SetOutput(io.Discard)
+
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			fs.SetOutput(os.Stdout)
+			fs.Usage()
+
+			return true, nil
+		}
+
+		fs.SetOutput(os.Stderr)
+		fs.Usage()
+
+		return false, err
+	}
+
+	if fs.NArg() != 0 {
+		fs.SetOutput(os.Stderr)
+		fs.Usage()
+
+		return false, fmt.Errorf("unexpected argument %q", fs.Arg(0))
+	}
+
+	return false, nil
+}
+
+// parseLEDSolid validates the "led solid" flags without touching the device.
+//
+// A nil handler with a nil error means the flags were fully handled, such as
+// when --help was requested.
+func parseLEDSolid(args []string) (handler, error) {
+	fs := flag.NewFlagSet("led solid", flag.ContinueOnError)
+
+	colorName := fs.String("color", "white", "LED color")
+	brightnessArg := fs.Int("brightness", 64, "brightness, 0-255")
+
+	done, err := parseFlags(fs, args)
+	if err != nil {
+		return nil, err
+	}
+
+	if done {
+		return nil, nil
+	}
+
+	color, err := parseColor(*colorName)
+	if err != nil {
+		return nil, err
+	}
+
+	brightness, err := uint8Arg("brightness", *brightnessArg)
+	if err != nil {
+		return nil, err
+	}
+
+	return func(d *device) error {
+		return applyLighting(d, color, brightness, effectStatic)
+	}, nil
+}
+
+// parseLEDAlert validates the "led alert" flags without touching the device.
+//
+// A nil handler with a nil error means the flags were fully handled, such as
+// when --help was requested.
+func parseLEDAlert(args []string) (handler, error) {
 	fs := flag.NewFlagSet("led alert", flag.ContinueOnError)
 
 	colorName := fs.String("color", "amber", "alert color")
 	brightnessArg := fs.Int("brightness", 80, "brightness, 0-255")
 	rateArg := fs.Int("rate", 1, "breathing rate, 1-4")
 
-	if err := fs.Parse(args); err != nil {
-		return err
+	done, err := parseFlags(fs, args)
+	if err != nil {
+		return nil, err
 	}
 
-	if fs.NArg() != 0 {
-		return fmt.Errorf("unexpected argument %q", fs.Arg(0))
+	if done {
+		return nil, nil
 	}
 
 	color, err := parseColor(*colorName)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	brightness, err := uint8Arg("brightness", *brightnessArg)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	if *rateArg < 1 || *rateArg > 4 {
-		return errors.New("rate must be between 1 and 4")
+		return nil, errors.New("rate must be between 1 and 4")
 	}
 
 	// QMK assigns four consecutive modes to the breathing effect.
@@ -414,19 +536,9 @@ func ledAlert(d *device, args []string) error {
 	// rate=4 -> mode 5
 	effect := effectBreathing + byte(*rateArg-1)
 
-	if err := d.setColor(color); err != nil {
-		return fmt.Errorf("setting alert color: %w", err)
-	}
-
-	if err := d.setBrightness(brightness); err != nil {
-		return fmt.Errorf("setting alert brightness: %w", err)
-	}
-
-	if err := d.setEffect(effect); err != nil {
-		return fmt.Errorf("enabling breathing effect: %w", err)
-	}
-
-	return nil
+	return func(d *device) error {
+		return applyLighting(d, color, brightness, effect)
+	}, nil
 }
 
 func status(d *device) error {
@@ -465,8 +577,20 @@ func status(d *device) error {
 	return nil
 }
 
+// usage prints the top-level usage to stderr, for the paths where it
+// accompanies an error message.
 func usage() {
-	fmt.Fprintf(os.Stderr, `Usage:
+	fprintUsage(os.Stderr)
+}
+
+// helpUsage prints the top-level usage to stdout, for an explicit help
+// request, so that it can be piped or redirected.
+func helpUsage() {
+	fprintUsage(os.Stdout)
+}
+
+func fprintUsage(w io.Writer) {
+	fmt.Fprintf(w, `Usage:
   thekeyctl status
 
   thekeyctl led off
@@ -493,10 +617,71 @@ Examples:
 `)
 }
 
-func run() error {
-	if len(os.Args) < 2 {
+// handler performs a command against an open, protocol-checked device.
+type handler func(d *device) error
+
+// parseCommand validates the command line without opening the device, so that
+// help and argument errors work with no macropad attached.
+//
+// A nil handler with a nil error means the command was fully handled by
+// printing usage.
+func parseCommand(args []string) (handler, error) {
+	if len(args) == 0 {
 		usage()
-		return errors.New("command required")
+		return nil, errors.New("command required")
+	}
+
+	switch args[0] {
+	case "status":
+		if len(args) != 1 {
+			usage()
+			return nil, errors.New("status takes no arguments")
+		}
+		return status, nil
+
+	case "led":
+		if len(args) < 2 {
+			usage()
+			return nil, errors.New("LED command required")
+		}
+
+		switch args[1] {
+		case "off":
+			if len(args) != 2 {
+				usage()
+				return nil, errors.New("led off takes no arguments")
+			}
+			return ledOff, nil
+
+		case "solid":
+			return parseLEDSolid(args[2:])
+
+		case "alert":
+			return parseLEDAlert(args[2:])
+
+		default:
+			usage()
+			return nil, fmt.Errorf("unknown LED command %q", args[1])
+		}
+
+	case "help", "-h", "--help":
+		helpUsage()
+		return nil, nil
+
+	default:
+		usage()
+		return nil, fmt.Errorf("unknown command %q", args[0])
+	}
+}
+
+func run() error {
+	h, err := parseCommand(os.Args[1:])
+	if err != nil {
+		return err
+	}
+
+	if h == nil {
+		return nil
 	}
 
 	if err := hid.Init(); err != nil {
@@ -518,47 +703,7 @@ func run() error {
 		return err
 	}
 
-	switch os.Args[1] {
-	case "status":
-		if len(os.Args) != 2 {
-			usage()
-			return errors.New("status takes no arguments")
-		}
-		return status(d)
-
-	case "led":
-		if len(os.Args) < 3 {
-			usage()
-			return errors.New("LED command required")
-		}
-
-		switch os.Args[2] {
-		case "off":
-			if len(os.Args) != 3 {
-				usage()
-				return errors.New("led off takes no arguments")
-			}
-			return ledOff(d)
-
-		case "solid":
-			return ledSolid(d, os.Args[3:])
-
-		case "alert":
-			return ledAlert(d, os.Args[3:])
-
-		default:
-			usage()
-			return fmt.Errorf("unknown LED command %q", os.Args[2])
-		}
-
-	case "help", "-h", "--help":
-		usage()
-		return nil
-
-	default:
-		usage()
-		return fmt.Errorf("unknown command %q", os.Args[1])
-	}
+	return h(d)
 }
 
 func main() {
