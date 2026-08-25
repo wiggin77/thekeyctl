@@ -1,0 +1,33 @@
+# Built binary
+/thekeyctl
+/thekeyctl.exe
+
+# Go build/test artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Coverage/profiling output
+coverage.out
+coverage.html
+*.prof
+
+# Workspace files
+go.work
+go.work.sum
+
+# Local/editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
