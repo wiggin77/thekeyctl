@@ -31,27 +31,21 @@ func helpUsage() {
 
 func fprintUsage(w io.Writer) {
 	fmt.Fprintf(w, `Usage:
-  thekeyctl device info
-
-  thekeyctl status
+  thekeyctl device info [--json]
+  thekeyctl status [--json]
 
   thekeyctl led off
   thekeyctl led solid [--color COLOR] [--brightness 0-255]
   thekeyctl led alert [--color COLOR] [--brightness 0-255] [--rate 1-4]
 
 Colors:
-  red
-  amber
-  orange
-  yellow
-  green
-  cyan
-  blue
-  purple
-  pink
-  white
+  red, amber, orange, yellow, green, cyan, blue, purple, pink, white
 
 Examples:
+  thekeyctl device info
+  thekeyctl device info --json
+  thekeyctl status
+  thekeyctl status --json
   thekeyctl led off
   thekeyctl led solid --color blue --brightness 40
   thekeyctl led alert
@@ -101,6 +95,54 @@ func parseFlags(fs *flag.FlagSet, args []string) (bool, error) {
 	}
 
 	return false, nil
+}
+
+// parseStatus validates the "status" flags without touching the device.
+//
+// A nil handler with a nil error means the flags were fully handled, such as
+// when --help was requested.
+func parseStatus(args []string) (handler, error) {
+	fs := flag.NewFlagSet("status", flag.ContinueOnError)
+	jsonOut := fs.Bool("json", false, "output as JSON")
+
+	done, err := parseFlags(fs, args)
+	if err != nil {
+		return nil, err
+	}
+
+	if done {
+		return nil, nil
+	}
+
+	if *jsonOut {
+		return statusJSON, nil
+	}
+
+	return status, nil
+}
+
+// parseDeviceInfo validates the "device info" flags without touching the device.
+//
+// A nil handler with a nil error means the flags were fully handled, such as
+// when --help was requested.
+func parseDeviceInfo(args []string) (handler, error) {
+	fs := flag.NewFlagSet("device info", flag.ContinueOnError)
+	jsonOut := fs.Bool("json", false, "output as JSON")
+
+	done, err := parseFlags(fs, args)
+	if err != nil {
+		return nil, err
+	}
+
+	if done {
+		return nil, nil
+	}
+
+	if *jsonOut {
+		return deviceInfoJSON, nil
+	}
+
+	return deviceInfo, nil
 }
 
 // parseLEDSolid validates the "led solid" flags without touching the device.
@@ -207,11 +249,7 @@ func parseCommand(args []string) (handler, error) {
 
 		switch args[1] {
 		case "info":
-			if len(args) != 2 {
-				usage()
-				return nil, errors.New("device info takes no arguments")
-			}
-			return deviceInfo, nil
+			return parseDeviceInfo(args[2:])
 
 		default:
 			usage()
@@ -219,11 +257,7 @@ func parseCommand(args []string) (handler, error) {
 		}
 
 	case "status":
-		if len(args) != 1 {
-			usage()
-			return nil, errors.New("status takes no arguments")
-		}
-		return status, nil
+		return parseStatus(args[1:])
 
 	case "led":
 		if len(args) < 2 {

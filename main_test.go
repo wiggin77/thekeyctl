@@ -73,10 +73,10 @@ func TestParseCommandErrorsUseStderr(t *testing.T) {
 		{"unknown command", []string{"bogus"}, `unknown command "bogus"`},
 		{"device without subcommand", []string{"device"}, "device command required"},
 		{"unknown device command", []string{"device", "bogus"}, `unknown device command "bogus"`},
-		{"device info with arguments", []string{"device", "info", "extra"}, "device info takes no arguments"},
+		{"device info with arguments", []string{"device", "info", "extra"}, `unexpected argument "extra"`},
 		{"unknown led command", []string{"led", "bogus"}, `unknown LED command "bogus"`},
 		{"missing led command", []string{"led"}, "LED command required"},
-		{"status with arguments", []string{"status", "extra"}, "status takes no arguments"},
+		{"status with arguments", []string{"status", "extra"}, `unexpected argument "extra"`},
 		{"led off with arguments", []string{"led", "off", "extra"}, "led off takes no arguments"},
 	}
 
@@ -93,7 +93,7 @@ func TestParseCommandErrorsUseStderr(t *testing.T) {
 				t.Error("handler is not nil, want nil")
 			}
 
-			if !strings.Contains(errOut.String(), "Usage:") {
+			if !strings.Contains(errOut.String(), "Usage") {
 				t.Errorf("stderr = %q, want the usage text", errOut.String())
 			}
 
@@ -140,14 +140,21 @@ func TestParseCommandRejectsBadFlagsWithoutDevice(t *testing.T) {
 }
 
 func TestParseCommandSubcommandHelpUsesStdout(t *testing.T) {
-	for _, args := range [][]string{
-		{"led", "solid", "-h"},
-		{"led", "alert", "--help"},
-	} {
-		t.Run(strings.Join(args, " "), func(t *testing.T) {
+	tests := []struct {
+		args    []string
+		wantStr string
+	}{
+		{[]string{"led", "solid", "-h"}, "-brightness"},
+		{[]string{"led", "alert", "--help"}, "-brightness"},
+		{[]string{"status", "-h"}, "-json"},
+		{[]string{"device", "info", "--help"}, "-json"},
+	}
+
+	for _, tt := range tests {
+		t.Run(strings.Join(tt.args, " "), func(t *testing.T) {
 			out, errOut := captureOutput(t)
 
-			h, err := parseCommand(args)
+			h, err := parseCommand(tt.args)
 			if err != nil {
 				t.Fatalf("err = %v, want nil", err)
 			}
@@ -156,8 +163,8 @@ func TestParseCommandSubcommandHelpUsesStdout(t *testing.T) {
 				t.Error("handler is not nil, want nil")
 			}
 
-			if !strings.Contains(out.String(), "-brightness") {
-				t.Errorf("stdout = %q, want the flag defaults", out.String())
+			if !strings.Contains(out.String(), tt.wantStr) {
+				t.Errorf("stdout = %q, want %q in output", out.String(), tt.wantStr)
 			}
 
 			if errOut.Len() != 0 {
@@ -257,6 +264,42 @@ func TestParseLEDAlertRates(t *testing.T) {
 		if want := effectBreathing + byte(rate-1); got != want {
 			t.Errorf("rate %d set effect %d, want %d", rate, got, want)
 		}
+	}
+}
+
+func TestParseStatusBuildsHandlers(t *testing.T) {
+	for _, args := range [][]string{
+		{"status"},
+		{"status", "--json"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			h, err := parseCommand(args)
+			if err != nil {
+				t.Fatalf("err = %v, want nil", err)
+			}
+
+			if h == nil {
+				t.Fatal("handler is nil, want one")
+			}
+		})
+	}
+}
+
+func TestParseDeviceInfoBuildsHandlers(t *testing.T) {
+	for _, args := range [][]string{
+		{"device", "info"},
+		{"device", "info", "--json"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			h, err := parseCommand(args)
+			if err != nil {
+				t.Fatalf("err = %v, want nil", err)
+			}
+
+			if h == nil {
+				t.Fatal("handler is nil, want one")
+			}
+		})
 	}
 }
 

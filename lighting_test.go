@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -100,6 +101,80 @@ func TestDeviceInfoRGBLIGHTUnavailable(t *testing.T) {
 	}
 }
 
+func TestStatusJSON(t *testing.T) {
+	d, _ := newFakeDevice(
+		fakeRead{data: packet(cmdGetProtocolVersion, 0x00, 0x09)},
+		fakeRead{data: packet(cmdLightingGetValue, rgbEffect, 3)},
+		fakeRead{data: packet(cmdLightingGetValue, rgbBrightness, 77)},
+		fakeRead{data: packet(cmdLightingGetValue, rgbColor, 191, 255)},
+		fakeRead{data: packet(cmdLightingGetValue, rgbSpeed, 0)},
+	)
+
+	out := captureStdout(t)
+
+	if err := statusJSON(d); err != nil {
+		t.Fatalf("statusJSON: %v", err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("invalid JSON: %v\noutput: %q", err, out.String())
+	}
+
+	checks := map[string]float64{
+		"protocol_version": 9,
+		"effect":           3,
+		"brightness":       77,
+		"hue":              191,
+		"saturation":       255,
+		"speed":            0,
+	}
+	for key, want := range checks {
+		if got[key] != want {
+			t.Errorf("%s = %v, want %v", key, got[key], want)
+		}
+	}
+}
+
+func TestDeviceInfoJSON(t *testing.T) {
+	d, _ := newFakeDevice(
+		fakeRead{data: packet(cmdGetProtocolVersion, 0x00, 0x09)},
+		fakeRead{data: packet(cmdLightingGetValue, rgbBrightness, 40)},
+	)
+	d.path = "/dev/hidraw0"
+	d.product = "Drop The Key V2"
+
+	out := captureStdout(t)
+
+	if err := deviceInfoJSON(d); err != nil {
+		t.Fatalf("deviceInfoJSON: %v", err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("invalid JSON: %v\noutput: %q", err, out.String())
+	}
+
+	if got["product"] != "Drop The Key V2" {
+		t.Errorf("product = %v, want \"Drop The Key V2\"", got["product"])
+	}
+	if got["vid"] != "359b" {
+		t.Errorf("vid = %v, want \"359b\"", got["vid"])
+	}
+	if got["pid"] != "000e" {
+		t.Errorf("pid = %v, want \"000e\"", got["pid"])
+	}
+	if got["hid_path"] != "/dev/hidraw0" {
+		t.Errorf("hid_path = %v, want \"/dev/hidraw0\"", got["hid_path"])
+	}
+	if got["via_protocol"] != float64(9) {
+		t.Errorf("via_protocol = %v, want 9", got["via_protocol"])
+	}
+	if got["rgblight_available"] != true {
+		t.Errorf("rgblight_available = %v, want true", got["rgblight_available"])
+	}
+}
+
 func TestApplyLightingWriteOrder(t *testing.T) {
 	t.Run("breathing", func(t *testing.T) {
 		d, f := echoDevice()
@@ -183,7 +258,7 @@ func TestParseColorNamesMatchUsage(t *testing.T) {
 	text := buf.String()
 
 	for name := range colors {
-		if !strings.Contains(text, "\n  "+name+"\n") {
+		if !strings.Contains(text, name) {
 			t.Errorf("color %q is missing from the usage text", name)
 		}
 	}
