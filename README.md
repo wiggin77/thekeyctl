@@ -481,6 +481,3 @@ The hardware DFU bootloader remains available independently of the application f
 
 If a future firmware build fails to boot correctly, use the physical `S1` reset button to enter Atmel DFU mode and flash a known-good image again.
 
-## License
-
-Add the license appropriate for this repository.
