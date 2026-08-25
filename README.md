@@ -406,21 +406,13 @@ Because mappings are stored in the keyboard, an OS-level remapper such as `input
 
 A typical application integration is:
 
-```text
-Application needs user input
-        |
-        v
-thekeyctl led alert
-        |
-        v
-Macropad LEDs breathe
-        |
-        v
-User presses one of the three keys
-        |
-        +--> Firmware turns the LEDs off
-        |
-        +--> Configured keypress is sent to the application
+```mermaid
+flowchart TD
+    A[Application needs user input] --> B[thekeyctl led alert]
+    B --> C[Macropad LEDs breathe]
+    C --> D[User presses one of the three keys]
+    D --> E[Firmware turns the LEDs off]
+    D --> F[Configured keypress is sent to the application]
 ```
 
 No daemon is required and the CLI does not need to stay running after starting an alert.
@@ -465,12 +457,19 @@ QMK silently ignores RGBLIGHT values it cannot apply to the current state, and r
 
 So values cannot simply be written in the order an application thinks of them. `thekeyctl` enables the LEDs in static mode, configures them there, and switches to the requested effect last:
 
-```text
-effect  = static     enable RGBLIGHT so later writes are accepted
-brightness = 0       hide the previous color while the new one is set
-color   = hue, sat
-brightness = value   set while static, because breathing ignores it
-effect  = requested  skipped when the requested effect is static
+```mermaid
+sequenceDiagram
+    participant C as thekeyctl
+    participant K as Macropad
+    C->>K: effect = static
+    Note right of K: Enables RGBLIGHT, so the writes below are accepted
+    C->>K: brightness = 0
+    Note right of K: Hides the previous color while the new one is set
+    C->>K: color = hue, saturation
+    C->>K: brightness = requested
+    Note right of K: Must be set while static, breathing ignores it
+    C->>K: effect = requested
+    Note right of K: Skipped when the requested effect is static
 ```
 
 Getting this wrong is not a visible protocol error. It shows up as the first command after `led off` keeping the previous color, or as `led alert --brightness` having no effect.
@@ -510,6 +509,64 @@ qmk compile -kb drop/thekey/v2 -km vial
 ```
 
 Only flash after confirming the build succeeds and fits within the ATmega32U4 firmware size limit.
+
+## Troubleshooting
+
+### Permission denied opening the device
+
+```text
+thekeyctl: opening HID device "/dev/hidraw4": Failed to open a device with path '/dev/hidraw4': Permission denied
+```
+
+The Raw HID interface was found, but the `hidraw` node cannot be opened. This is the udev rule, not the firmware.
+
+Enumerating HID devices goes through udev and does not need access to the node itself, so a missing rule always surfaces at open time like this, never as a "not found" error.
+
+Checks, in order:
+
+```bash
+ls -l /dev/hidraw*
+```
+
+The macropad's nodes should show a trailing `+` on the permissions, which is the ACL granted by `TAG+="uaccess"`:
+
+```text
+crw-rw----+ 1 root root 238, 4 /dev/hidraw4
+```
+
+If there is no `+`:
+
+- Confirm the rule from [Linux HID permissions](#linux-hid-permissions) is installed as `/etc/udev/rules.d/59-thekeyctl.rules`.
+- Reload with `sudo udevadm control --reload-rules`, then unplug and reconnect the macropad. Rules are applied on device events, so an already-connected device keeps its old permissions.
+- `uaccess` grants the ACL to the user with an active local session. Over SSH there is no local seat, so use a group instead of `TAG+="uaccess"`:
+
+  ```text
+  KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="359b", ATTRS{idProduct}=="000e", MODE="0660", GROUP="plugdev"
+  ```
+
+  and make sure your account is in that group.
+
+### Vial HID interface not found
+
+```text
+thekeyctl: The Key V2 Vial HID interface not found (VID=359b PID=000e usage=ff60:0061)
+```
+
+Nothing matching the macropad's Raw HID interface was enumerated. Confirm the device is connected and running the custom firmware:
+
+```bash
+lsusb | grep -Ei '359b|the.?key'
+```
+
+`359b:000e Drop Inc. The Key V2` means the firmware is right and the device is present. `feed:6060 qmkbuilder keyboard` means the stock firmware is still flashed, so there is no Vial Raw HID interface to talk to. See [Custom firmware](#custom-firmware).
+
+### Unsupported VIA protocol version
+
+```text
+thekeyctl: unsupported VIA protocol version 12; expected 9
+```
+
+The firmware was rebuilt against a Vial-QMK revision that uses a newer VIA protocol. The RGBLIGHT packet layout has to be re-checked against that version before `expectedVIAProtocol` in `device.go` is raised.
 
 ## Recovery
 
